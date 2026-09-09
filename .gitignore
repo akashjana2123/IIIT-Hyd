@@ -1,8 +1,8 @@
 # Python
 __pycache__/
 *.py[cod]
-.venv/
-backend/.env
+env/
+backend/env/
 backend/data/uploads/
 
 # Node / Next.js
@@ -13,3 +13,5 @@ frontend/.next/
 .DS_Store
 Thumbs.db
 
+.pnpm-store/
+.pytest_cache/
