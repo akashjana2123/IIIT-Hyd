@@ -1,2 +1,0 @@
-"""SARAL chatbot backend package."""
-
