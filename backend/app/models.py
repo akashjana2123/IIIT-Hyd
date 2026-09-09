@@ -39,12 +39,14 @@ class GenerationRequest(BaseModel):
     length: Length = "90s"
     style: Style = "plain_english"
     slide_count: int = Field(default=5, ge=1, le=10)
+    provider: Literal["auto", "google", "openai", "extractive_fallback"] = "auto"
+    api_key: str | None = Field(default=None, max_length=300)
 
 
 class GenerationResponse(BaseModel):
     run_id: str
     document_id: str
-    provider: Literal["extractive_fallback", "openai"]
+    provider: Literal["extractive_fallback", "openai", "google"]
     audience: Audience
     length: Length
     style: Style

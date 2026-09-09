@@ -73,17 +73,26 @@ Open `http://localhost:3000`.
 4. Ask **“Make this less technical and more accessible.”** for slide 2. The revised text and before/after diff appear beneath the form.
 5. Capture this browser flow and the conversation-log endpoint as evidence for the assignment.
 
-## Optional LLM provider
+## Optional LLM providers
 
-The fallback works without credentials. To activate the optional provider, set the key before starting the backend:
+The fallback works without credentials. To activate an optional LLM provider (Google AI / Gemini or OpenAI), set the key before starting the backend, or select the provider and enter your key in the web interface:
 
+### Google AI (Gemini)
+```powershell
+$env:GEMINI_API_KEY = "your-google-ai-api-key"
+# or $env:GOOGLE_API_KEY = "your-google-ai-api-key"
+$env:GEMINI_MODEL = "gemini-1.5-flash"  # optional override
+uvicorn app.main:app --reload --port 8000
+```
+
+### OpenAI
 ```powershell
 $env:OPENAI_API_KEY = "your-key"
 $env:OPENAI_MODEL = "gpt-4.1-mini"  # optional override
 uvicorn app.main:app --reload --port 8000
 ```
 
-The provider is isolated in `backend/app/generation.py`; it can be replaced with Sarvam, Gemini, a local model, or another approved API.
+Providers are isolated in `backend/app/generation.py` with automatic evidence grounding and source citation verification.
 
 ## Docker option
 

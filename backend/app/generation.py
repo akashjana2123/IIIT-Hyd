@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import re
 import uuid
@@ -84,10 +85,10 @@ def _claim_from_llm(item: dict, source_lookup: dict[str, SourceCitation]) -> Gen
     return GeneratedClaim(text=item["text"].strip(), citations=[_citation(source_lookup[source_id]) for source_id in source_ids])
 
 
-async def _openai_response(request: GenerationRequest, sources: list[SourceCitation]) -> GenerationResponse:
-    """Optional provider. The core prototype is usable offline through the fallback."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+async def _openai_response(request: GenerationRequest, sources: list[SourceCitation], api_key: str | None = None) -> GenerationResponse:
+    """Optional OpenAI provider."""
+    key = api_key or os.getenv("OPENAI_API_KEY")
+    if not key:
         raise RuntimeError("No OPENAI_API_KEY configured")
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     evidence = "\n\n".join(f"[{source.chunk_id} | page {source.page}]\n{source.excerpt}" for source in sources)
@@ -121,30 +122,124 @@ EVIDENCE:\n{evidence}"""
         "temperature": 0.2,
     }
     async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {api_key}"}, json=payload)
+        response = await client.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=payload)
         response.raise_for_status()
-    import json
     parsed = json.loads(response.json()["choices"][0]["message"]["content"])
     lookup = {source.chunk_id: source for source in sources}
     slides = [
-        Slide(number=index + 1, title=item["title"], bullets=[_claim_from_llm(claim, lookup) for claim in item["bullets"]], speaker_notes=[_claim_from_llm(claim, lookup) for claim in item["speaker_notes"]])
-        for index, item in enumerate(parsed["slides"])
+        Slide(
+            number=index + 1,
+            title=item.get("title", f"Slide {index + 1}"),
+            bullets=[_claim_from_llm(claim, lookup) for claim in item.get("bullets", [])] or _claims_from_source(sources[index % len(sources)], 1),
+            speaker_notes=[_claim_from_llm(claim, lookup) for claim in item.get("speaker_notes", [])] or _claims_from_source(sources[index % len(sources)], 1),
+        )
+        for index, item in enumerate(parsed.get("slides", []))
     ]
     return GenerationResponse(
         run_id=str(uuid.uuid4()), document_id=request.document_id, provider="openai", audience=request.audience,
         length=request.length, style=request.style, slides=slides,
-        script=[_claim_from_llm(claim, lookup) for claim in parsed["script"]], retrieved_sources=sources,
+        script=[_claim_from_llm(claim, lookup) for claim in parsed.get("script", [])] or [claim for slide in slides for claim in slide.bullets],
+        retrieved_sources=sources, created_at=datetime.now(timezone.utc),
+    )
+
+
+async def _google_response(request: GenerationRequest, sources: list[SourceCitation], api_key: str | None = None) -> GenerationResponse:
+    """Optional Google AI (Gemini) provider."""
+    key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not key:
+        raise RuntimeError("No GEMINI_API_KEY or GOOGLE_API_KEY configured")
+    model = os.getenv("GEMINI_MODEL") or os.getenv("GOOGLE_MODEL") or "gemini-1.5-flash"
+    evidence = "\n\n".join(f"[{source.chunk_id} | page {source.page}]\n{source.excerpt}" for source in sources)
+    prompt = f"""Create a {request.slide_count}-slide presentation and approximately {WORD_TARGETS[request.length]}-word speaker script.
+Audience: {request.audience}. Style: {request.style} ({STYLE_GUIDANCE[request.style]}).
+User request: {request.prompt}
+Use ONLY the evidence below. Every bullet, note, and script sentence must include one or more exact chunk IDs in sources. Preserve LaTeX equations verbatim when relevant. Do not make unsupported claims.
+
+EVIDENCE:\n{evidence}
+
+Respond ONLY with valid JSON matching this schema:
+{{
+  "slides": [
+    {{
+      "title": "Slide title",
+      "bullets": [{{"text": "bullet claim", "sources": ["chunk_id"]}}],
+      "speaker_notes": [{{"text": "note claim", "sources": ["chunk_id"]}}]
+    }}
+  ],
+  "script": [
+    {{"text": "script sentence", "sources": ["chunk_id"]}}
+  ]
+}}"""
+    payload = {
+        "contents": [
+            {
+                "parts": [{"text": prompt}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "responseMimeType": "application/json",
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+    data = response.json()
+    raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+        raw_text = re.sub(r"\s*```$", "", raw_text)
+    parsed = json.loads(raw_text)
+    lookup = {source.chunk_id: source for source in sources}
+    slides = [
+        Slide(
+            number=index + 1,
+            title=item.get("title", f"Slide {index + 1}"),
+            bullets=[_claim_from_llm(claim, lookup) for claim in item.get("bullets", [])] or _claims_from_source(sources[index % len(sources)], 1),
+            speaker_notes=[_claim_from_llm(claim, lookup) for claim in item.get("speaker_notes", [])] or _claims_from_source(sources[index % len(sources)], 1),
+        )
+        for index, item in enumerate(parsed.get("slides", []))
+    ]
+    script = [_claim_from_llm(claim, lookup) for claim in parsed.get("script", [])] or [claim for slide in slides for claim in slide.bullets]
+    return GenerationResponse(
+        run_id=str(uuid.uuid4()), document_id=request.document_id, provider="google", audience=request.audience,
+        length=request.length, style=request.style, slides=slides,
+        script=script, retrieved_sources=sources,
         created_at=datetime.now(timezone.utc),
     )
 
 
 async def generate(store: DocumentStore, request: GenerationRequest) -> GenerationResponse:
     sources = store.search(request.document_id, f"{request.prompt} {request.audience} {request.style}", top_k=max(6, request.slide_count))
-    if os.getenv("OPENAI_API_KEY"):
+
+    if request.provider == "google":
         try:
-            return await _openai_response(request, sources)
-        except (httpx.HTTPError, KeyError, ValueError):
-            pass  # Remain demoable if the optional provider is unavailable.
+            return await _google_response(request, sources, api_key=request.api_key)
+        except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError, RuntimeError):
+            pass
+    elif request.provider == "openai":
+        try:
+            return await _openai_response(request, sources, api_key=request.api_key)
+        except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError, RuntimeError):
+            pass
+    elif request.provider == "extractive_fallback":
+        return _fallback_response(request, sources)
+    else:
+        # Auto mode: check Google AI first, then OpenAI, else fallback
+        google_key = request.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if google_key:
+            try:
+                return await _google_response(request, sources, api_key=google_key)
+            except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError, RuntimeError):
+                pass
+        openai_key = request.api_key or os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            try:
+                return await _openai_response(request, sources, api_key=openai_key)
+            except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError, RuntimeError):
+                pass
+
     return _fallback_response(request, sources)
 
 

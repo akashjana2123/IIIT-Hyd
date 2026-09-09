@@ -9,7 +9,7 @@ type Claim = { text: string; citations: Citation[] };
 type Slide = { number: number; title: string; bullets: Claim[]; speaker_notes: Claim[] };
 type Generation = {
   run_id: string;
-  provider: "extractive_fallback" | "openai";
+  provider: "extractive_fallback" | "openai" | "google";
   slides: Slide[];
   script: Claim[];
   retrieved_sources: Citation[];
@@ -33,6 +33,8 @@ export default function Home() {
   const [length, setLength] = useState("90s");
   const [style, setStyle] = useState("plain_english");
   const [slideCount, setSlideCount] = useState(5);
+  const [provider, setProvider] = useState<"auto" | "google" | "openai" | "extractive_fallback">("auto");
+  const [apiKey, setApiKey] = useState("");
   const [generation, setGeneration] = useState<Generation | null>(null);
   const [delta, setDelta] = useState<Delta | null>(null);
   const [revisionSlide, setRevisionSlide] = useState(2);
@@ -62,7 +64,11 @@ export default function Home() {
     try {
       const response = await fetch(`${API_BASE}/api/generate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ document_id: documentId, prompt, audience, length, style, slide_count: slideCount }),
+        body: JSON.stringify({
+          document_id: documentId, prompt, audience, length, style, slide_count: slideCount,
+          provider,
+          ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail ?? "Generation failed");
@@ -111,13 +117,17 @@ export default function Home() {
         <label>Length<select value={length} onChange={(e) => setLength(e.target.value)}><option value="30s">30 seconds</option><option value="90s">90 seconds</option><option value="5min">5 minutes</option></select></label>
         <label>Style<select value={style} onChange={(e) => setStyle(e.target.value)}><option value="plain_english">Plain English</option><option value="technical">Technical</option><option value="press_release">Press release</option></select></label>
         <label>Slides<input type="number" min="1" max="10" value={slideCount} onChange={(e) => setSlideCount(Number(e.target.value))} /></label>
+        <label>AI Provider<select value={provider} onChange={(e) => setProvider(e.target.value as any)}><option value="auto">Auto (Configured Key / Fallback)</option><option value="google">Google AI (Gemini)</option><option value="openai">OpenAI</option><option value="extractive_fallback">Local Extractive Fallback</option></select></label>
+        {provider !== "extractive_fallback" && (
+          <label>API Key (Optional)<input type="password" placeholder={provider === "google" ? "Google AI / Gemini key" : provider === "openai" ? "OpenAI key" : "Optional API key override"} value={apiKey} onChange={(e) => setApiKey(e.target.value)} /></label>
+        )}
         <button type="submit" disabled={busy || !documentId}>{busy ? "Working…" : "Generate cited draft"}</button>
       </form>
       {error && <p className="error" role="alert">{error}</p>}
     </section>
 
     {generation && <>
-      <section className="status"><span className="dot" /> Generated with {generation.provider === "openai" ? "the optional LLM provider" : "the local extractive fallback"}. Every item below links to retrieved evidence.</section>
+      <section className="status"><span className="dot" /> Generated with {generation.provider === "google" ? "Google AI (Gemini)" : generation.provider === "openai" ? "OpenAI" : "the local extractive fallback"}. Every item below links to retrieved evidence.</section>
       <section className="output">
         <div className="deck"><div className="step"><span>03</span><h2>Slide-level draft</h2></div>
           {generation.slides.map((slide) => <article className="slide" key={slide.number}>
